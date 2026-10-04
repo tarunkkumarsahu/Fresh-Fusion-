@@ -8,6 +8,12 @@
 
 <br>
 
+<p align="center">
+  <a href="https://fresh-fusion-jet.vercel.app/"><strong>Live Demo</strong></a>
+  &nbsp;•&nbsp;
+  <a href="https://fresh-fusion-jet.vercel.app/api/v1/health"><strong>API Health</strong></a>
+</p>
+
 > **Decision first. Evidence behind it.**
 
 FreshFusion combines smartphone vision, environmental sensing, relative gas-response analysis, multi-view inspection and evidence validation to produce explainable fruit-quality assessments.
@@ -36,7 +42,13 @@ The final assessment is produced through deterministic logic, while a local Gemm
 
 ## FreshFusion in Action
 
-> Add an actual screenshot of the working dashboard here.
+<p align="center">
+  <a href="https://fresh-fusion-jet.vercel.app/">
+    <strong>Open the deployed FreshFusion dashboard</strong>
+  </a>
+</p>
+
+> The live deployment is now available on Vercel. A repository-hosted dashboard screenshot will be displayed here once the real application capture is added to `docs/screenshots/live-inspection.png`.
 
 <p align="center">
   <img src="docs/screenshots/live-inspection.png" width="95%" alt="FreshFusion Live Inspection Dashboard">
@@ -602,7 +614,7 @@ Fresh-Fusion-/
 ## 1. Clone the Repository
 
 ```bash
-git clone https://github.com/thetarunsahu/Fresh-Fusion-.git
+git clone https://github.com/tarunkkumarsahu/Fresh-Fusion-.git
 cd Fresh-Fusion-
 ```
 
@@ -727,9 +739,9 @@ The repository contains implementation work across the complete stack.
 
 # Visual Proof
 
-Add real screenshots from the working application to the repository.
+Real application screenshots are used here so the repository shows the actual FreshFusion interface rather than generated mockups.
 
-Recommended structure:
+Screenshot structure:
 
 ```text
 docs/
