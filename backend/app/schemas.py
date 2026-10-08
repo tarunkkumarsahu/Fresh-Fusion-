@@ -78,9 +78,10 @@ class SensorIn(BaseModel):
     sample_id: str | None = None
     device_id: str = Field(default="ESP32_01", min_length=1, max_length=80)
     source: Literal["hardware", "simulator"] = "hardware"
-    temperature: float = Field(ge=0, le=50)
-    humidity: float = Field(ge=0, le=100)
-    mq135_raw: float = Field(ge=0, le=4095)
+    temperature: float | None = Field(default=None, ge=0, le=50)
+    humidity: float | None = Field(default=None, ge=0, le=100)
+    mq135_raw: float | None = Field(default=None, ge=0, le=4095)
+    moisture: float | None = Field(default=None, ge=0, le=100)
     gas_ppm: float | None = Field(default=None, ge=0)
     voc_index: float | None = Field(default=None, ge=0)
     rssi: float | None = None
