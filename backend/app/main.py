@@ -12,7 +12,7 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI(
     title="FreshFusion API",
     version="2.3.0",
-    description="Multimodal fruit intelligence backend with automatic Apple/Banana identity, ESP32 telemetry, continuous phone vision, public dataset references, computer vision and fusion scoring.",
+    description="Multimodal fruit intelligence backend with automatic Apple/Banana identity, ESP telemetry, continuous phone vision, public dataset references, computer vision and fusion scoring.",
 )
 app.add_middleware(
     CORSMiddleware,
@@ -42,6 +42,9 @@ def _lan_ip() -> str:
 
 
 def _public_origin(request: Request) -> str:
+    configured = os.getenv("PUBLIC_BACKEND_URL", "").strip().rstrip("/")
+    if configured:
+        return configured
     forwarded_host = request.headers.get("x-forwarded-host", "").strip()
     host = forwarded_host or request.headers.get("host", "").strip()
     forwarded_proto = request.headers.get("x-forwarded-proto", "").split(",")[0].strip()
@@ -57,28 +60,32 @@ def health(request: Request):
     backend_port = int(os.getenv("FRESHFUSION_BACKEND_PORT", "8000"))
     frontend_port = int(os.getenv("FRESHFUSION_FRONTEND_PORT", "5173"))
     public_phone_url = os.getenv("PHONE_DASHBOARD_URL", "").strip()
-    is_cloud = bool(os.getenv("VERCEL"))
+    is_cloud = bool(
+        os.getenv("VERCEL")
+        or os.getenv("RAILWAY_ENVIRONMENT")
+        or os.getenv("RAILWAY_PROJECT_ID")
+        or os.getenv("PUBLIC_BACKEND_URL")
+    )
+    origin = _public_origin(request)
 
     if public_phone_url:
         phone_dashboard = public_phone_url
-        phone_mode = (
-            "trusted-https-tunnel"
-            if public_phone_url.startswith("https://")
-            else "configured"
-        )
+        phone_mode = "configured-cloud" if public_phone_url.startswith("https://") else "configured"
         camera_secure = public_phone_url.startswith("https://")
     elif is_cloud:
-        # The dashboard and phone page are deployed under the same Vercel origin.
-        # Build the URL from forwarded request headers so QR pairing survives
-        # preview/production domains without hardcoding a deployment hostname.
-        origin = _public_origin(request)
         phone_dashboard = f"{origin}/phone.html" if origin else "/phone.html"
-        phone_mode = "cloud-same-origin"
+        phone_mode = "cloud"
         camera_secure = phone_dashboard.startswith("https://") or not origin
     else:
         phone_dashboard = f"http://{lan_ip}:{frontend_port}/phone.html"
         phone_mode = "lan-fallback"
         camera_secure = False
+
+    esp32_endpoint = (
+        f"{origin}/api/v1/sensors/readings"
+        if is_cloud and origin
+        else f"http://{lan_ip}:{backend_port}/api/v1/sensors/readings"
+    )
 
     return {
         "status": "online",
@@ -90,7 +97,7 @@ def health(request: Request):
         "camera_secure": camera_secure,
         "backend_port": backend_port,
         "frontend_port": frontend_port,
-        "esp32_endpoint": f"http://{lan_ip}:{backend_port}/api/v1/sensors/readings",
+        "esp32_endpoint": esp32_endpoint,
         "fruit_identity": {
             "mode": "auto",
             "supported_now": ["Apple", "Banana"],
