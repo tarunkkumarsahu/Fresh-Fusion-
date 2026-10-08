@@ -65,8 +65,8 @@ export function evidenceMetrics(report) {
   const multiview = report?.analysts?.multiview || {};
 
   return [
-    ["Temp", reading.temperature == null ? "—" : `${Number(reading.temperature).toFixed(1)} °C`],
-    ["Humidity", reading.humidity == null ? "—" : `${Number(reading.humidity).toFixed(0)}%`],
+    ["Moisture", reading.moisture == null ? "—" : `${Number(reading.moisture).toFixed(0)}%`],
+    ["Signal", reading.rssi == null ? "—" : `${Math.round(Number(reading.rssi))} dBm`],
     ["MQ135", reading.mq135_raw == null ? "—" : `${Math.round(Number(reading.mq135_raw))}`],
     ["Damage", vision.defects?.visible_damage_estimate_pct == null ? "—" : `${Number(vision.defects.visible_damage_estimate_pct).toFixed(0)}%`],
     ["Views", `${multiview.views?.length || 0}/${multiview.required_views ?? 3}`],
@@ -120,7 +120,7 @@ export function proactiveMessages(report, fruitType) {
     messages.push({
       level: "warning",
       title: "Sensor evidence is stale",
-      text: "Wait for a fresh ESP32 reading before relying on the assessment.",
+      text: "Wait for a fresh hardware reading before relying on the assessment.",
     });
   }
 
