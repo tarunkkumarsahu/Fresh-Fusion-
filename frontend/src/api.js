@@ -1,4 +1,7 @@
-export const API_ROOT = import.meta.env.VITE_API_ROOT || window.location.origin;
+const configuredRoot =
+  import.meta.env.VITE_API_ROOT ||
+  "https://freshfusion-backend-production.up.railway.app";
+export const API_ROOT = configuredRoot.replace(/\/$/, "");
 export const API = `${API_ROOT}/api/v1`;
 
 async function json(url, options = {}) {
