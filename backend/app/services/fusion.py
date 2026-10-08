@@ -58,6 +58,7 @@ def evaluate_fusion(db: Session, sample: FruitSample) -> dict:
     sensor_evidence = assess_sensors(sensors)
     sensor_score = sensor_evidence["score"]
     sensor_components = sensor_evidence["components"]
+    hardware_present = bool(sensor_evidence.get("physical_present"))
 
     validation = evaluate_physical_evidence(db, sample, images=images, sensors=sensors)
 
@@ -124,11 +125,17 @@ def evaluate_fusion(db: Session, sample: FruitSample) -> dict:
     from .datasets import reference_index_status
     latest_analysis = (images[0].analysis or {}) if images else {}
     critic = evaluate_critic(latest_analysis, validation, sensor_evidence, vision_score, reference_index_status()["ready"], sample.fruit_type)
-    verdict_ready = bool(validation.get("verdict_ready")) and sensor_score is not None and vision_score is not None and not critic["blocking"]
+    verdict_ready = bool(validation.get("verdict_ready")) and hardware_present and vision_score is not None and not critic["blocking"]
     validation["verdict_ready"] = verdict_ready
 
+    fusion_mode = "vision_plus_scored_sensors" if sensor_score is not None else "vision_plus_unscored_hardware"
     if verdict_ready:
-        score = sensor_score * 0.48 + vision_score * 0.52
+        if sensor_score is not None:
+            score = sensor_score * 0.48 + vision_score * 0.52
+        else:
+            # Moisture-only hardware proves that physical telemetry is live, but is
+            # intentionally not assigned an uncalibrated freshness weight.
+            score = vision_score
         angles = {_view_name(i.angle) for i in valid_images if _view_name(i.angle) in {"front", "back", "left", "right", "top"}}
         coverage = min(1.0, len(angles) / 5.0)
         confidence = min(0.94, 0.62 + coverage * 0.20 + float(validation.get("confidence") or 0.0) / 100.0 * 0.10)
@@ -146,8 +153,8 @@ def evaluate_fusion(db: Session, sample: FruitSample) -> dict:
             label, risk = "physical-verification-failed", "unverified"
         elif critic["contradictions"]:
             label, risk = "conflicting-evidence", "unverified"
-        elif validation.get("physical_likely") and sensor_score is None:
-            label, risk = "waiting-for-esp32", "unverified"
+        elif validation.get("physical_likely") and not hardware_present:
+            label, risk = "waiting-for-hardware", "unverified"
         elif validation.get("status") == "no_fruit":
             label, risk = "waiting-for-fruit", "unverified"
         else:
@@ -162,11 +169,13 @@ def evaluate_fusion(db: Session, sample: FruitSample) -> dict:
         confidence=round(confidence * 100, 1),
         risk=risk,
         explanation=(
-            "Final freshness output is released only after multi-view physical-fruit verification and ESP32 telemetry. "
-            "The physical check is probabilistic because a single phone camera has no true depth sensor. "
-            "Freshness fusion remains experimental and must be calibrated against labelled FreshFusion ground truth before scientific use."
+            "Final output requires multi-view physical-fruit verification and recent physical hardware telemetry. "
+            "Legacy DHT11/MQ135 telemetry may contribute an experimental sensor score. Moisture-only ESP8266 telemetry "
+            "is shown as hardware evidence but is not assigned a freshness weight until labelled calibration exists. "
+            "The physical check is probabilistic because a single phone camera has no true depth sensor."
         ),
         components={
+            "fusion_mode": fusion_mode,
             "sensor": sensor_components,
             "sensor_evidence": sensor_evidence,
             "vision": vision_components,
