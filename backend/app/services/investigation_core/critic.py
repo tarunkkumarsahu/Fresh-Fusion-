@@ -1,5 +1,4 @@
 """Evidence checks, not an LLM. Rules are explicit and shared with fusion."""
-
 def evaluate_critic(analysis, physical, sensors, vision_score, reference_ready, expected_fruit=None):
     missing, contradictions, warnings, supporting = [], [], [], []
     present = analysis.get("quality", {}).get("fruit_present") is True
@@ -23,13 +22,17 @@ def evaluate_critic(analysis, physical, sensors, vision_score, reference_ready, 
     consistency = physical.get("identity_consistency_pct", 0)
     if physical.get("views_count", 0) >= 3 and consistency < 66:
         contradictions.append("Fruit identity is inconsistent or unknown across views.")
+
     latest = sensors.get("latest")
     if not latest:
-        missing.append("Waiting for ESP32: no sensor readings.")
+        missing.append("Waiting for hardware: no sensor readings.")
     elif not sensors.get("physical_present"):
-        missing.append("Waiting for ESP32: valid hardware readings within 45 seconds are required.")
+        missing.append("Waiting for hardware: a valid physical reading within 45 seconds is required.")
     else:
-        supporting.append("Recent temperature, humidity and raw MQ135 readings are available.")
+        if latest.get("moisture") is not None and latest.get("mq135_raw") is None:
+            supporting.append("Recent ESP8266 moisture telemetry is available as physical hardware evidence.")
+        else:
+            supporting.append("Recent physical sensor telemetry is available.")
     if latest and latest.get("source") != "hardware":
         warnings.append("Latest telemetry is simulator/test data; it cannot unlock a physical verdict.")
     if latest and (sensors.get("age_seconds") is None or sensors["age_seconds"] > 45):
@@ -38,13 +41,16 @@ def evaluate_critic(analysis, physical, sensors, vision_score, reference_ready, 
         warnings.append("Public reference index is not built; reference comparison is unavailable.")
     elif analysis.get("reference_match", {}).get("status") == "ready":
         supporting.append("A published reference comparison is available; similarity is not accuracy.")
+
     score = sensors.get("score")
-    # Reuse existing fresh/spoiled bands, not new statistical confidence thresholds.
     if score is not None and vision_score is not None and (
         (score >= 82 and vision_score < 38) or (vision_score >= 82 and score < 38)
     ):
         contradictions.append("Visual and sensor assessments fall in opposing fresh/spoilage bands; human review required.")
-    warnings.append("Gas contribution and fusion thresholds are experimental and require empirical calibration.")
+    if latest and latest.get("moisture") is not None and score is None:
+        warnings.append("Moisture is displayed as hardware evidence only and is not assigned an uncalibrated freshness weight.")
+    else:
+        warnings.append("Gas contribution and fusion thresholds are experimental and require empirical calibration.")
     status = "BLOCKED" if contradictions else "NEEDS MORE DATA" if missing else "WARNING" if warnings else "PASSED"
     return {"status": status, "blocking": bool(missing or contradictions), "supporting_evidence": supporting,
             "missing_evidence": missing, "contradictions": contradictions, "warnings": warnings}
