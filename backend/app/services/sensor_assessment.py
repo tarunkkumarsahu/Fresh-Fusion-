@@ -1,29 +1,24 @@
-"""DHT11 + 12-bit MQ135 evidence assessment.
+"""Hardware evidence assessment for FreshFusion.
 
-The MQ135 signal is treated as an uncalibrated electrical response. FreshFusion
-can record an empty-chamber baseline and compare later fruit readings against it,
-but neither the delta nor the experimental sensor score is a gas concentration,
-food-safety measurement, or validated shelf-life estimate.
+Legacy DHT11 + MQ135 telemetry keeps its existing experimental score. A newer
+ESP8266 moisture-only node is accepted as recent physical hardware evidence, but
+its moisture percentage is not converted into a freshness score because that
+relationship has not been empirically calibrated.
 """
 from datetime import datetime, timezone
 from math import isfinite
 import os
 
 SENSOR_MAX_AGE = 45
-ADC_MAX = 4095.0  # 2**12 - 1; firmware explicitly selects 12-bit ADC resolution.
-# Prototype readiness gate only. This is configurable because MQ135 warm-up and
-# burn-in depend on the actual module and operating protocol; it is not a
-# calibration constant.
+ADC_MAX = 4095.0
 SENSOR_WARMUP_SECONDS = max(0, int(os.getenv("MQ135_WARMUP_SECONDS", "120")))
 BASELINE_PHASES = {"baseline", "empty", "empty_chamber", "clean_air"}
 FRUIT_PHASES = {"fruit", "sample", "measurement", "inspect", "inspection"}
 
 GAS_NOTE = (
     "MQ135 is used as a raw/relative 12-bit electrical response, not calibrated ppm. "
-    "When an empty-chamber baseline is explicitly recorded, FreshFusion reports the "
-    "raw delta from that local baseline. Baseline delta, trend and the experimental "
-    "42-point gas penalty are not universal fruit standards and must be calibrated "
-    "with the FreshFusion labelled dataset before scientific or shelf-life claims."
+    "Moisture-only ESP8266 telemetry is recorded as physical hardware evidence but "
+    "is not converted into a freshness score until labelled calibration exists."
 )
 
 
@@ -57,7 +52,18 @@ def measurement_phase(row):
     return phase or "fruit"
 
 
-def valid_measurements(row):
+def moisture_value(row):
+    if row is None:
+        return None
+    value = (row.extra_metrics or {}).get("moisture")
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    return value if isfinite(value) and 0 <= value <= 100 else None
+
+
+def legacy_valid_measurements(row):
     return all(
         value is not None and isfinite(value) and low <= value <= high
         for value, low, high in [
@@ -68,7 +74,13 @@ def valid_measurements(row):
     )
 
 
+def valid_measurements(row):
+    return legacy_valid_measurements(row) or moisture_value(row) is not None
+
+
 def warmup_state(row):
+    if row is not None and not legacy_valid_measurements(row) and moisture_value(row) is not None:
+        return {"state": "not_required", "ready": True, "uptime_seconds": None, "required_seconds": 0}
     if row is None or row.uptime_ms is None:
         return {"state": "unknown", "ready": None, "uptime_seconds": None, "required_seconds": SENSOR_WARMUP_SECONDS}
     uptime_seconds = max(0.0, float(row.uptime_ms) / 1000.0)
@@ -85,6 +97,10 @@ def _hardware_valid(rows):
     return [row for row in rows if sensor_source(row) == "hardware" and valid_measurements(row)]
 
 
+def _legacy_hardware_valid(rows):
+    return [row for row in rows if sensor_source(row) == "hardware" and legacy_valid_measurements(row)]
+
+
 def eligible_sensors(rows):
     eligible = []
     for row in rows:
@@ -92,8 +108,7 @@ def eligible_sensors(rows):
             continue
         if not (-5 <= age_seconds(row.captured_at) <= SENSOR_MAX_AGE):
             continue
-        warmup = warmup_state(row)
-        if warmup["ready"] is False:
+        if warmup_state(row)["ready"] is False:
             continue
         eligible.append(row)
     return eligible
@@ -104,7 +119,7 @@ def _mean(rows, name):
 
 
 def _baseline_summary(rows):
-    baseline_rows = [row for row in _hardware_valid(rows) if measurement_phase(row) == "baseline"]
+    baseline_rows = [row for row in _legacy_hardware_valid(rows) if measurement_phase(row) == "baseline"]
     if not baseline_rows:
         return {
             "available": False,
@@ -119,7 +134,6 @@ def _baseline_summary(rows):
     values = [float(row.mq135_raw) for row in baseline_rows]
     mean = sum(values) / len(values)
     spread = max(values) - min(values)
-    # Operational stability check only; not a sensor-accuracy specification.
     allowed_spread = max(50.0, mean * 0.08)
     newest = max(baseline_rows, key=lambda row: row.captured_at or datetime.min)
     return {
@@ -135,11 +149,8 @@ def _baseline_summary(rows):
 
 
 def _trend_summary(rows):
-    fruit_rows = [row for row in _hardware_valid(rows) if measurement_phase(row) != "baseline"]
-    fruit_rows = sorted(
-        [row for row in fruit_rows if row.captured_at is not None],
-        key=lambda row: row.captured_at,
-    )[-12:]
+    fruit_rows = [row for row in _legacy_hardware_valid(rows) if measurement_phase(row) != "baseline"]
+    fruit_rows = sorted([row for row in fruit_rows if row.captured_at is not None], key=lambda row: row.captured_at)[-12:]
     if len(fruit_rows) < 3:
         return {"available": False, "direction": "insufficient_data", "delta_raw": None, "raw_per_minute": None, "readings": len(fruit_rows)}
     first, last = fruit_rows[0], fruit_rows[-1]
@@ -148,11 +159,7 @@ def _trend_summary(rows):
     minutes = max((t1 - t0).total_seconds() / 60.0, 1 / 60)
     delta = float(last.mq135_raw) - float(first.mq135_raw)
     rate = delta / minutes
-    # Neutral band prevents tiny ADC noise from being described as a meaningful change.
-    if abs(rate) < 5:
-        direction = "stable"
-    else:
-        direction = "rising" if rate > 0 else "falling"
+    direction = "stable" if abs(rate) < 5 else ("rising" if rate > 0 else "falling")
     return {
         "available": True,
         "direction": direction,
@@ -164,18 +171,14 @@ def _trend_summary(rows):
 
 
 def _stuck_signal(rows):
-    recent = [row for row in _hardware_valid(rows) if measurement_phase(row) != "baseline"]
-    recent = sorted(
-        [row for row in recent if row.captured_at is not None],
-        key=lambda row: row.captured_at,
-    )[-5:]
+    recent = [row for row in _legacy_hardware_valid(rows) if measurement_phase(row) != "baseline"]
+    recent = sorted([row for row in recent if row.captured_at is not None], key=lambda row: row.captured_at)[-5:]
     if len(recent) < 5:
         return {"checked": False, "suspected": False, "spread": None}
     values = [float(row.mq135_raw) for row in recent]
     spread = max(values) - min(values)
     duration = (recent[-1].captured_at - recent[0].captured_at).total_seconds()
-    suspected = duration >= 8 and spread <= 2.0
-    return {"checked": True, "suspected": suspected, "spread": round(spread, 2)}
+    return {"checked": True, "suspected": duration >= 8 and spread <= 2.0, "spread": round(spread, 2)}
 
 
 def _evidence_quality(*, latest, baseline, stuck, eligible_count):
@@ -186,8 +189,7 @@ def _evidence_quality(*, latest, baseline, stuck, eligible_count):
         problems.append("Sensor reading is stale.")
     if sensor_source(latest) != "hardware":
         problems.append("Latest reading is simulator data.")
-    warmup = warmup_state(latest)
-    if warmup["ready"] is False:
+    if warmup_state(latest)["ready"] is False:
         problems.append("Sensor warm-up gate is not complete.")
     if stuck.get("suspected"):
         problems.append("MQ135 signal appears unusually flat across recent readings.")
@@ -197,12 +199,16 @@ def _evidence_quality(*, latest, baseline, stuck, eligible_count):
         problems.append("No recent eligible hardware reading is available.")
     if problems:
         return {"level": "weak", "reasons": problems}
+    if moisture_value(latest) is not None and not legacy_valid_measurements(latest):
+        return {"level": "moderate", "reasons": ["Recent physical ESP8266 moisture telemetry is available; its freshness relationship is not yet calibrated."]}
     if not baseline.get("available") or baseline.get("stable") is None:
         return {"level": "moderate", "reasons": ["Sensor evidence is usable, but a stable empty-chamber baseline has not yet been established."]}
     return {"level": "strong", "reasons": ["Recent hardware telemetry and an operationally stable baseline are available."]}
 
 
 def serialize_sensor(row):
+    moisture = moisture_value(row)
+    legacy_valid = legacy_valid_measurements(row)
     return {
         "id": row.id,
         "sample_id": row.sample_id,
@@ -212,7 +218,8 @@ def serialize_sensor(row):
         "temperature": row.temperature,
         "humidity": row.humidity,
         "mq135_raw": row.mq135_raw,
-        "relative_gas_response": round(row.mq135_raw / ADC_MAX, 4) if valid_measurements(row) else None,
+        "moisture": moisture,
+        "relative_gas_response": round(row.mq135_raw / ADC_MAX, 4) if legacy_valid else None,
         "gas_ppm": row.gas_ppm,
         "voc_index": row.voc_index,
         "rssi": row.rssi,
@@ -234,17 +241,14 @@ def assess_sensors(rows):
 
     baseline_delta = None
     baseline_delta_pct = None
-    if latest and baseline["available"] and valid_measurements(latest) and measurement_phase(latest) != "baseline":
+    if latest and baseline["available"] and legacy_valid_measurements(latest) and measurement_phase(latest) != "baseline":
         baseline_delta = float(latest.mq135_raw) - float(baseline["mq135_raw_mean"])
         if baseline["mq135_raw_mean"]:
             baseline_delta_pct = baseline_delta / float(baseline["mq135_raw_mean"]) * 100
 
-    quality = _evidence_quality(
-        latest=latest,
-        baseline=baseline,
-        stuck=stuck,
-        eligible_count=len(eligible),
-    )
+    quality = _evidence_quality(latest=latest, baseline=baseline, stuck=stuck, eligible_count=len(eligible))
+    moisture_rows = [row for row in eligible if moisture_value(row) is not None]
+    legacy_rows = [row for row in eligible if legacy_valid_measurements(row)]
 
     result = {
         "latest": latest_serialized,
@@ -267,30 +271,25 @@ def assess_sensors(rows):
         "note": GAS_NOTE,
     }
 
-    if eligible:
-        raw = _mean(eligible, "mq135_raw")
+    if legacy_rows:
+        raw = _mean(legacy_rows, "mq135_raw")
         components = {
-            "temperature_penalty": abs(_mean(eligible, "temperature") - 24) * 2.5,
-            "humidity_penalty": abs(_mean(eligible, "humidity") - 60) * 0.65,
+            "temperature_penalty": abs(_mean(legacy_rows, "temperature") - 24) * 2.5,
+            "humidity_penalty": abs(_mean(legacy_rows, "humidity") - 60) * 0.65,
             "gas_penalty": raw / ADC_MAX * 42,
             "relative_gas_response": raw / ADC_MAX,
             "mq135_raw_mean": raw,
         }
-        result["score"] = round(
-            max(
-                0,
-                min(
-                    100,
-                    100
-                    - sum(
-                        components[key]
-                        for key in ("temperature_penalty", "humidity_penalty", "gas_penalty")
-                    ),
-                ),
-            ),
-            2,
-        )
+        result["score"] = round(max(0, min(100, 100 - sum(components[key] for key in ("temperature_penalty", "humidity_penalty", "gas_penalty")))), 2)
         result["components"] = {key: round(value, 4) for key, value in components.items()}
         result["components"]["gas_note"] = GAS_NOTE
+    elif moisture_rows:
+        moisture_values = [moisture_value(row) for row in moisture_rows]
+        result["components"] = {
+            "moisture_pct_latest": round(moisture_values[0], 2),
+            "moisture_pct_mean": round(sum(moisture_values) / len(moisture_values), 2),
+            "moisture_readings": len(moisture_values),
+            "moisture_note": "Moisture is displayed as physical sensor evidence only; no freshness score is inferred from it.",
+        }
 
     return result
